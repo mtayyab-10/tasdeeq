@@ -1,0 +1,56 @@
+# --- secrets & credentials (NEVER commit) ---
+.env
+.env.*
+.env*.local
+.env.development
+.env.test
+.env.production
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*service-account*.json
+*credentials*.json
+client_secret*.json
+tokens.json
+auth.json
+
+# --- local databases & exported audit artifacts ---
+*.sqlite
+*.sqlite3
+*.db
+truenorth_verified_*.csv
+Tasdeeq_Audit_*.csv
+truenorth_release_*.json
+
+# --- Next.js ---
+/.next/
+/out/
+/build
+
+# --- Node ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- TypeScript ---
+*.tsbuildinfo
+next-env.d.ts
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Misc ---
+.vercel
+*.log
