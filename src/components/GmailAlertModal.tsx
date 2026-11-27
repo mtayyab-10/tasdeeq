@@ -26,7 +26,23 @@ export default function GmailAlertModal({ alert, isOpen, onClose, onAction }: Pr
 
   const handleAction = async (action: "approved_ok" | "fix_requested") => {
     setSending(true);
-    await new Promise((r) => setTimeout(r, 900));
+    // Dispatch alert action to server API
+    try {
+      await fetch("/api/alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "dispatch",
+          alertData: {
+            invoice_number: alert.invoice_number,
+            vendor_name: alert.vendor_name,
+            total_amount: alert.total_amount,
+            findings: alert.findings?.map(f => ({ field: f.field, evidence: f.issue, category: "arithmetic_check", severity: "high", status: "open", finding_id: `f_${Date.now()}` })) || [],
+          }
+        }),
+      });
+    } catch {}
+    await new Promise((r) => setTimeout(r, 600));
     onAction(alert.alert_id, action);
     setSent(action);
     setSending(false);

@@ -67,19 +67,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       let res;
-      try {
-        res = await fetch(`${API_BASE}/api/verify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } catch {
-        res = await fetch("http://localhost:3000/api/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      }
+      res = await fetch(`${API_BASE}/api/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Verification failed");

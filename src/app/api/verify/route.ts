@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runUnifiedVerification } from "@/lib/verification-engine";
 import { VerifyRequestSchema } from "@/lib/types";
-import { saveSession, getSession, createSessionId, ReviewSession } from "@/lib/review-store";
+import { saveSession, createSessionId, ReviewSession } from "@/lib/review-store";
+import { recordVerificationStats } from "@/lib/multi-agent-system";
 
 // CORS headers to enable seamless communication with the browser extension
 function corsHeaders() {
@@ -70,6 +71,9 @@ export async function POST(req: NextRequest) {
       gateState: result.gateState,
     };
     saveSession(session);
+
+    // Record findings for the weekly summary report
+    recordVerificationStats(result.findings, entries);
 
     return NextResponse.json(
       {

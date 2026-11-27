@@ -172,76 +172,198 @@ export function getActiveOwnerAlerts(): WhatsAppAlert[] {
 export const handleOwnerWhatsAppResponse = handleOwnerAlertResponse;
 export const getActiveWhatsAppAlerts = getActiveOwnerAlerts;
 
+// ── Runtime Verification Stats Accumulator ────────────────────────────────────
+interface VerificationStats {
+  arithmetic_errors: number;
+  duplicate_bills: number;
+  outlier_prices: number;
+  transpositions: number;
+  missing_fields: number;
+  total_amount_protected: number;
+  vendor_counts: Record<string, number>;
+}
+
+let weeklyStats: VerificationStats = {
+  arithmetic_errors: 0,
+  duplicate_bills: 0,
+  outlier_prices: 0,
+  transpositions: 0,
+  missing_fields: 0,
+  total_amount_protected: 0,
+  vendor_counts: {},
+};
+
+/** Called after every verification run to accumulate weekly stats */
+export function recordVerificationStats(findings: Finding[], entries?: TypedEntry[]) {
+  const vendor = entries?.find((e) => e.field === "vendor_name")?.typed_value || "Unknown";
+  const amount = parseFloat(entries?.find((e) => e.field === "total_amount")?.typed_value?.replace(/[^0-9.-]/g, "") || "0");
+
+  for (const f of findings) {
+    const evidence = (f.evidence || "").toLowerCase();
+    const rule = (f.rule_id || "").toLowerCase();
+
+    if (rule.includes("math") || rule.includes("arithmetic") || evidence.includes("arithmetic") || evidence.includes("qty") || evidence.includes("price") || evidence.includes("total")) {
+      weeklyStats.arithmetic_errors++;
+    } else if (rule.includes("dup") || evidence.includes("duplicate") || evidence.includes("already exists")) {
+      weeklyStats.duplicate_bills++;
+    } else if (rule.includes("outlier") || evidence.includes("benchmark") || evidence.includes("outlier")) {
+      weeklyStats.outlier_prices++;
+    } else if (rule.includes("transpos") || evidence.includes("transposition") || evidence.includes("digit")) {
+      weeklyStats.transpositions++;
+    } else if (f.category === "missing_context" || evidence.includes("missing") || evidence.includes("required")) {
+      weeklyStats.missing_fields++;
+    } else {
+      weeklyStats.arithmetic_errors++;
+    }
+  }
+
+  if (findings.length > 0 && amount > 0) {
+    weeklyStats.total_amount_protected += amount;
+  }
+
+  if (findings.length > 0 && vendor !== "Unknown") {
+    weeklyStats.vendor_counts[vendor] = (weeklyStats.vendor_counts[vendor] || 0) + findings.length;
+  }
+}
+
+/** Reset stats (called after weekly report dispatch) */
+export function resetWeeklyStats() {
+  weeklyStats = {
+    arithmetic_errors: 0, duplicate_bills: 0, outlier_prices: 0,
+    transpositions: 0, missing_fields: 0, total_amount_protected: 0,
+    vendor_counts: {},
+  };
+}
+
+function getCurrentWeekPeriod(): string {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((dayOfWeek + 6) % 7));
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (d: Date) => d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  return `${fmt(monday)} – ${fmt(sunday)}`;
+}
+
 // ── Report Agent: Weekly Summary Report ───────────────────────────────────────
 export function generateWeeklySummaryReport(): WeeklySummaryReport {
+  const totalMistakes =
+    weeklyStats.arithmetic_errors +
+    weeklyStats.duplicate_bills +
+    weeklyStats.outlier_prices +
+    weeklyStats.transpositions +
+    weeklyStats.missing_fields;
+
+  // Estimate hours saved: ~1.3 hours per caught mistake (industry avg for manual reconciliation)
+  const hoursSaved = Math.round(totalMistakes * 1.3 * 10) / 10;
+
+  // Sort vendors by count descending
+  const topVendors = Object.entries(weeklyStats.vendor_counts)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([vendor, count]) => ({ vendor, count }));
+
   return {
-    week_period: "October 19, 2026 – October 25, 2026",
-    mistakes_caught: 14,
-    hours_saved: 18.5,
-    amount_protected_pkr: 247800,
+    week_period: getCurrentWeekPeriod(),
+    mistakes_caught: totalMistakes,
+    hours_saved: hoursSaved,
+    amount_protected_pkr: Math.round(weeklyStats.total_amount_protected),
     breakdown: {
-      arithmetic_errors: 6,
-      duplicate_bills: 3,
-      outlier_prices: 2,
-      transpositions: 2,
-      missing_fields: 1,
+      arithmetic_errors: weeklyStats.arithmetic_errors,
+      duplicate_bills: weeklyStats.duplicate_bills,
+      outlier_prices: weeklyStats.outlier_prices,
+      transpositions: weeklyStats.transpositions,
+      missing_fields: weeklyStats.missing_fields,
     },
-    top_flagged_vendors: [
-      { vendor: "Al-Kareem General Store", count: 4 },
-      { vendor: "Packages Limited", count: 3 },
-      { vendor: "Metro Cash & Carry", count: 2 },
-    ],
+    top_flagged_vendors: topVendors.length > 0 ? topVendors : [{ vendor: "No vendors flagged yet", count: 0 }],
     generated_by: "Report Agent (MCP: Gmail & Google Sheets)",
     scheduled_by: "Manager Agent (MCP: Calendar - Every Monday 09:00 AM)",
-    email_recipient: "accounting-team@tasdeeq.ai",
+    email_recipient: process.env.OWNER_ALERT_EMAIL || "devixaweb@gmail.com",
     status: "sent",
   };
 }
 
 // ── Closing Agent: Month-End Checklist ────────────────────────────────────────
+function getCurrentMonthYear(): string {
+  const now = new Date();
+  return now.toLocaleDateString("en-US", { year: "numeric", month: "long" });
+}
+
 export function generateMonthEndChecklist(currentFindings?: Finding[]): MonthEndChecklist {
   const ledger = getLedgerEntries();
   const openFindingsCount = (currentFindings || []).filter((f) => f.status === "open").length;
+  const monthYear = getCurrentMonthYear();
 
-  const checklistItems = [
-    {
-      id: "CHK-01",
-      voucher_id: "VCH-2026-0125",
-      vendor_name: "Al-Kareem General Store",
-      title: "Voucher Amount vs Bill Discrepancy",
-      issue: "Discrepancy of PKR 3,600 detected between invoice amount and scanned bill.",
+  // Build dynamic checklist from ledger entries that might have issues
+  const checklistItems: MonthEndChecklist["checklist_items"] = [];
+  let chkIdx = 1;
+
+  // Check for open findings from the current session
+  if (openFindingsCount > 0) {
+    checklistItems.push({
+      id: `CHK-${String(chkIdx++).padStart(2, "0")}`,
+      voucher_id: "CURRENT-SESSION",
+      vendor_name: "Current Verification",
+      title: `${openFindingsCount} Unresolved Finding(s) in Active Session`,
+      issue: `${openFindingsCount} discrepancies detected during the current verification run remain unresolved.`,
       severity: "blocking" as const,
-      recommended_fix: "Adopt verified document total (PKR 50,400) or attach manager approval note.",
-      resolved: openFindingsCount === 0,
-    },
-    {
-      id: "CHK-02",
-      voucher_id: "VCH-2026-0089",
-      vendor_name: "LESCO (Lahore Electric)",
-      title: "Utility Bill Missing GST Breakup",
-      issue: "LESCO electricity voucher entered with combined total without sales tax itemization.",
-      severity: "warning" as const,
-      recommended_fix: "Split tax component into FBR sales tax withholding ledger line.",
-      resolved: true,
-    },
-    {
-      id: "CHK-03",
-      voucher_id: "VCH-2026-0102",
-      vendor_name: "Pakistan State Oil (PSO)",
-      title: "Fleet Fuel Voucher Missing Vehicle Log #",
-      issue: "Voucher logged under Logistics & Fuel without vehicle registration tag.",
-      severity: "warning" as const,
-      recommended_fix: "Add vehicle registration number (e.g. LEA-2024-41) to notes.",
+      recommended_fix: "Return to Step 3 and resolve all open findings before closing.",
       resolved: false,
-    },
-  ];
+    });
+  }
+
+  // Scan ledger for entries that might need attention
+  for (const entry of ledger) {
+    // Flag entries without tax breakup for utility bills
+    if (entry.category === "Utilities") {
+      checklistItems.push({
+        id: `CHK-${String(chkIdx++).padStart(2, "0")}`,
+        voucher_id: entry.id,
+        vendor_name: entry.vendor_name,
+        title: "Verify GST/Tax Breakup on Utility Bill",
+        issue: `${entry.vendor_name} voucher (PKR ${entry.total_amount.toLocaleString()}) — ensure sales tax is itemized separately per FBR requirements.`,
+        severity: "warning" as const,
+        recommended_fix: "Split tax component into FBR sales tax withholding ledger line if not already done.",
+        resolved: true, // Default resolved; user can uncheck
+      });
+    }
+
+    // Flag logistics entries missing vehicle log
+    if (entry.category === "Logistics & Fuel") {
+      checklistItems.push({
+        id: `CHK-${String(chkIdx++).padStart(2, "0")}`,
+        voucher_id: entry.id,
+        vendor_name: entry.vendor_name,
+        title: "Fleet Fuel Voucher — Vehicle Log # Required",
+        issue: `${entry.vendor_name} voucher logged under Logistics & Fuel — ensure vehicle registration tag is attached.`,
+        severity: "warning" as const,
+        recommended_fix: "Add vehicle registration number (e.g. LEA-2024-41) to voucher notes.",
+        resolved: false,
+      });
+    }
+  }
+
+  // If no items generated, add a clean status entry
+  if (checklistItems.length === 0) {
+    checklistItems.push({
+      id: "CHK-01",
+      voucher_id: "ALL",
+      vendor_name: "All Vendors",
+      title: "All Vouchers Verified — No Pending Issues",
+      issue: "All ledger entries for this month have been verified and reconciled.",
+      severity: "warning" as const,
+      recommended_fix: "No action required. Ready for sign-off.",
+      resolved: true,
+    });
+  }
 
   const openIssues = checklistItems.filter((item) => !item.resolved).length;
 
   return {
-    month_year: "October 2026",
-    total_vouchers_scanned: ledger.length + 1,
-    clean_vouchers: ledger.length,
+    month_year: monthYear,
+    total_vouchers_scanned: ledger.length + (openFindingsCount > 0 ? 1 : 0),
+    clean_vouchers: ledger.filter((e) => e.status === "verified").length,
     open_issues_count: openIssues,
     checklist_items: checklistItems,
     closing_status: openIssues === 0 ? "ready_for_close" : "needs_action",

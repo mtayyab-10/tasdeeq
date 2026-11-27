@@ -16,7 +16,7 @@ import type {
 } from "@/lib/types";
 import { resolveFinding } from "@/lib/rules-engine";
 import { DEMO_EXTRACTION, DEMO_TYPED_ENTRIES } from "@/lib/demo-cache";
-import { generateWeeklySummaryReport, generateMonthEndChecklist } from "@/lib/multi-agent-system";
+import { generateWeeklySummaryReport, generateMonthEndChecklist, recordVerificationStats } from "@/lib/multi-agent-system";
 
 import Uploader from "@/components/Uploader";
 import EntryTable from "@/components/EntryTable";
@@ -115,7 +115,7 @@ export default function HomePage() {
     }
   }, []);
 
-  // Image upload handler
+  // Image upload handler — also triggers automatic extraction
   const handleImageSelect = useCallback((base64: string, mime: string, preview: string) => {
     setImageBase64(base64);
     setImageMime(mime);
@@ -125,6 +125,41 @@ export default function HomePage() {
     setFindings([]);
     setSummary(null);
     setStep("upload");
+
+    // Automatically trigger extraction after a brief delay for UX
+    setTimeout(async () => {
+      setIsExtracting(true);
+      setError(null);
+      try {
+        const res = await fetch("/api/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: base64, mimeType: mime }),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          throw new Error(json.error ?? "Extraction failed");
+        }
+        const ext: ExtractionResult = json.data;
+        setExtraction(ext);
+        // Auto-fill the entry table from the extracted data
+        setTypedEntries([
+          { id: "e1", field: "vendor_name",    typed_value: ext.vendor_name || "" },
+          { id: "e2", field: "invoice_number", typed_value: ext.invoice_number || "" },
+          { id: "e3", field: "date",           typed_value: ext.date || "" },
+          { id: "e4", field: "total_amount",   typed_value: ext.total_amount != null ? String(ext.total_amount) : "" },
+          { id: "e5", field: "quantity",       typed_value: ext.line_items?.[0]?.quantity != null ? String(ext.line_items[0].quantity) : "" },
+          { id: "e6", field: "unit_price",     typed_value: ext.line_items?.[0]?.unit_price != null ? String(ext.line_items[0].unit_price) : "" },
+        ]);
+        setUsedDemo(false);
+        setStep("compare");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        setError(msg);
+      } finally {
+        setIsExtracting(false);
+      }
+    }, 300);
   }, []);
 
   // Step 1: Extract with Gemma
@@ -182,6 +217,10 @@ export default function HomePage() {
       setFindings(json.findings || []);
       setSessionId(json.sessionId);
       if (json.summary) setSummary(json.summary);
+      // Record stats for the weekly report
+      recordVerificationStats(json.findings || [], typedEntries);
+      // Refresh weekly report with live data
+      setWeeklyReport(generateWeeklySummaryReport());
       setStep("resolve");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Verification error";
@@ -767,7 +806,25 @@ export default function HomePage() {
             onOpenWeeklySummary={() => setIsWeeklyOpen(true)}
             onOpenMonthEnd={() => setIsMonthEndOpen(true)}
             onLoadDuplicateDemo={loadDuplicateDemo}
-            onDriveFolderSync={() => loadDemo()}
+            onDriveFolderSync={async () => {
+              try {
+                const res = await fetch("/api/agents", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "sync_drive" }),
+                });
+                const data = await res.json();
+                if (data.files && data.files.length > 0) {
+                  alert(`Drive sync complete: found ${data.files.length} bill photo(s) in Tasdeeq Drive folder. Use the Upload zone to process them.`);
+                } else {
+                  alert("Drive sync: No bill photos found in Drive folder. Upload photos directly instead.");
+                  loadDemo();
+                }
+              } catch {
+                alert("Drive sync unavailable — Google Drive credentials not configured. Loading demo data instead.");
+                loadDemo();
+              }
+            }}
           />
 
           {/* Business Context Bar */}
