@@ -128,7 +128,21 @@ export function runDeterministicChecks(
   const unitPriceNum = parseNumeric(get("unit_price"));
   if (qtyNum !== null && unitPriceNum !== null) {
     const calculatedLineTotal = qtyNum * unitPriceNum;
-    if (totalAmountNum !== null && subtotalNum === null && Math.abs(calculatedLineTotal - totalAmountNum) > 1) {
+    // When document is present:
+    // If the bill has tax, multiple line items, or subtotal, line 1 is only one component of the total.
+    // In that case, check if line 1 matches line 1 in the document or if single-line total equals total.
+    const isMultiLineOrTaxedDoc =
+      doc &&
+      ((doc.line_items && doc.line_items.length > 1) ||
+       (doc.tax != null && doc.tax > 0) ||
+       (doc.subtotal != null && doc.subtotal !== doc.total_amount));
+
+    if (
+      totalAmountNum !== null &&
+      subtotalNum === null &&
+      !isMultiLineOrTaxedDoc &&
+      Math.abs(calculatedLineTotal - totalAmountNum) > 1
+    ) {
       findings.push({
         finding_id: nextId(),
         rule_id: "RULE_MATH_MISMATCH",
@@ -172,7 +186,17 @@ export function runDeterministicChecks(
   // Date Format Sanity Check
   const dateVal = get("date");
   if (dateVal) {
-    const parsedDate = new Date(dateVal);
+    let parsedDate = new Date(dateVal);
+
+    // Support DD-MM-YYYY and DD/MM/YYYY formats commonly used in Pakistan
+    if (isNaN(parsedDate.getTime())) {
+      const dmyMatch = dateVal.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+      if (dmyMatch) {
+        const [, day, month, year] = dmyMatch;
+        parsedDate = new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
+      }
+    }
+
     if (isNaN(parsedDate.getTime())) {
       findings.push({
         finding_id: nextId(),
@@ -183,7 +207,7 @@ export function runDeterministicChecks(
         typed_value: dateVal,
         evidence: `Invalid date format "${dateVal}".`,
         explanation: "Date cannot be parsed into a calendar date.",
-        suggested_action: "Use YYYY-MM-DD or DD/MM/YYYY.",
+        suggested_action: "Use YYYY-MM-DD or DD-MM-YYYY.",
         confidence: "high",
         severity: "blocking",
         status: "open",
