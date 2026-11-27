@@ -486,6 +486,7 @@ export default function HomePage() {
               Month-End
             </button>
             <Link href="/demo-form" className="pk-nav-link">Controlled Form ↗</Link>
+            <Link href="/sample-form" className="pk-nav-link" style={{ color: "var(--accent)" }}>Google Form Sample ↗</Link>
             <button
               className="pk-button-primary"
               onClick={loadDemo}
