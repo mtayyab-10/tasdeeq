@@ -143,6 +143,51 @@ function runLocalVerification(entries, context) {
   };
 }
 
+// ── Safe Communication with Active Tab (Auto-injects if missing) ────────────
+async function ensureContentScriptInjected(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    await chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ["content.css"],
+    }).catch(() => {});
+  } catch (e) {
+    console.warn("Script injection skipped or not permitted:", e);
+  }
+}
+
+async function sendTabMessage(message) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) throw new Error("No active browser tab found.");
+
+  return new Promise(async (resolve, reject) => {
+    chrome.tabs.sendMessage(tab.id, message, async (response) => {
+      if (chrome.runtime.lastError) {
+        // Tab exists but content script hasn't loaded yet — inject dynamically and retry once
+        try {
+          await ensureContentScriptInjected(tab.id);
+          // Wait 100ms for script initialization
+          setTimeout(() => {
+            chrome.tabs.sendMessage(tab.id, message, (retryResponse) => {
+              if (chrome.runtime.lastError) {
+                return reject(new Error(chrome.runtime.lastError.message));
+              }
+              resolve(retryResponse);
+            });
+          }, 120);
+        } catch (injectErr) {
+          reject(injectErr);
+        }
+      } else {
+        resolve(response);
+      }
+    });
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const btnInspect = document.getElementById("btn-inspect");
   const btnVerify = document.getElementById("btn-verify");
@@ -155,26 +200,22 @@ document.addEventListener("DOMContentLoaded", () => {
     btnInspect.innerText = "Inspecting…";
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.id) throw new Error("No active browser tab found");
+      const response = await sendTabMessage({ action: "INSPECT_PAGE" });
+      btnInspect.disabled = false;
+      btnInspect.innerText = "Inspect Form";
 
-      chrome.tabs.sendMessage(tab.id, { action: "INSPECT_PAGE" }, (response) => {
-        btnInspect.disabled = false;
-        btnInspect.innerText = "Inspect Form";
+      if (!response || !response.fields || response.fields.length === 0) {
+        alert("No form inputs found on this page. Navigate to a supported form (e.g. Google Forms, https://gotruenorth-ai.vercel.app/demo-form, or /sample-form).");
+        return;
+      }
 
-        if (!response || !response.fields || response.fields.length === 0) {
-          alert("No form inputs found on this page. Navigate to a supported form (e.g. Google Forms or https://gotruenorth-ai.vercel.app/demo-form).");
-          return;
-        }
-
-        currentFields = response.fields;
-        renderFieldsList(currentFields);
-        btnVerify.disabled = false;
-      });
+      currentFields = response.fields;
+      renderFieldsList(currentFields);
+      btnVerify.disabled = false;
     } catch (err) {
       btnInspect.disabled = false;
       btnInspect.innerText = "Inspect Form";
-      alert("Could not inspect page: " + err.message);
+      alert("Could not inspect page: " + err.message + "\n\nTip: Refresh the tab once so the extension can attach.");
     }
   });
 
@@ -251,15 +292,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ── 3. Toggle Page Highlights ────────────────────────────────────────────
   btnHighlight.addEventListener("click", async () => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.id) return;
-
     if (isHighlighted) {
-      chrome.tabs.sendMessage(tab.id, { action: "CLEAR_HIGHLIGHTS" });
+      try {
+        await sendTabMessage({ action: "CLEAR_HIGHLIGHTS" });
+      } catch (e) {}
       isHighlighted = false;
       btnHighlight.innerText = "Highlight on Page";
     } else {
-      sendHighlightToPage(currentFindings, currentGateState);
+      await sendHighlightToPage(currentFindings, currentGateState);
       isHighlighted = true;
       btnHighlight.innerText = "Clear Highlights";
     }
@@ -385,10 +425,11 @@ function renderFindingsList(findings) {
         if (action === "autofix") {
           const field = e.target.getAttribute("data-field");
           const val = e.target.getAttribute("data-val");
-          // Update in-page DOM input
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (tab && tab.id) {
-            chrome.tabs.sendMessage(tab.id, { action: "AUTO_FIX_FIELD", field, value: val });
+          // Update in-page DOM input safely
+          try {
+            await sendTabMessage({ action: "AUTO_FIX_FIELD", field, value: val });
+          } catch (fixErr) {
+            console.warn("Could not autofix field in DOM:", fixErr);
           }
           // Mark finding resolved
           const finding = currentFindings.find((item) => item.finding_id === findingId);
@@ -448,13 +489,14 @@ function recalculateGate() {
 
 // ── Send In-Page Highlights ──────────────────────────────────────────────────
 async function sendHighlightToPage(findings, gateState, blockingCount = 0) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab && tab.id) {
-    chrome.tabs.sendMessage(tab.id, {
+  try {
+    await sendTabMessage({
       action: "HIGHLIGHT_FINDINGS",
       findings,
       gateState,
       blockingCount,
     });
+  } catch (e) {
+    console.warn("Could not send highlights to page:", e);
   }
 }
