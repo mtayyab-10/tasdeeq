@@ -66,15 +66,36 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     try {
-      let res;
-      res = await fetch(`${API_BASE}/api/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Verification failed");
+      let data;
+      // First attempt direct fetch from popup
+      try {
+        const res = await fetch(`${API_BASE}/api/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Verification failed");
+      } catch (fetchErr) {
+        // Fallback: Delegate fetch to Background Service Worker (immune to popup CORS/sandbox restrictions)
+        data = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage(
+            { action: "VERIFY_API", url: `${API_BASE}/api/verify`, payload },
+            (resp) => {
+              if (chrome.runtime.lastError) {
+                return reject(new Error(chrome.runtime.lastError.message));
+              }
+              if (!resp) {
+                return reject(new Error("No response from extension background"));
+              }
+              if (!resp.ok) {
+                return reject(new Error(resp.error || resp.data?.error || "Background verification request failed"));
+              }
+              resolve(resp.data);
+            }
+          );
+        });
+      }
 
       currentFindings = data.findings || [];
       currentGateState = data.gateState;

@@ -8,6 +8,22 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Listener for tab updates or potential badge updates
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "VERIFY_API") {
+    fetch(message.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message.payload),
+    })
+      .then(async (res) => {
+        const data = await res.json();
+        sendResponse({ ok: res.ok, status: res.status, data });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, error: err.message });
+      });
+    return true; // Keep message channel open for async response
+  }
+
   if (message.action === "SET_BADGE") {
     if (sender.tab && sender.tab.id) {
       const text = message.count > 0 ? String(message.count) : "";
